@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <string>
+#include <string_view>
 #include <array>
 #include <iostream>
 #include <algorithm>
@@ -102,7 +103,7 @@ struct FMIndex {
         std::cout << "[INFO] FM-index ready\n";
     }
 
-    std::pair<int,int> search(const std::string& p) const {
+    std::pair<int,int> search(std::string_view p) const {
         int l = 0, r_ = (int)bwt.size();
         for (int i = (int)p.size() - 1; i >= 0; --i) {
             unsigned char c = (unsigned char)p[i];
@@ -111,5 +112,19 @@ struct FMIndex {
             if (l >= r_) return {0,0};
         }
         return {l,r_};
+    }
+
+    bool verify_read(std::string_view read, size_t ref_start) const {
+        if (text.empty()) return false;
+        size_t max_pos = text.size() - 1; // avoid matching the sentinel
+        if (ref_start + read.size() > max_pos) return false;
+        for (size_t i = 0; i < read.size(); ++i) {
+            char ref_c = text[ref_start + i];
+            if (ref_c == '$') return false;
+            char read_c = read[i];
+            if (read_c == 'N') continue;
+            if (read_c != ref_c) return false;
+        }
+        return true;
     }
 };
