@@ -60,6 +60,8 @@ This way we can clearly present requested by the task values and properties:
 5. Allignment quality: 125.6 (out of 200, mean Smith-Waterman score for non-exactly matched reads); 36.16 (Phred quality score, describes sequencing).
 6. Genome read coverage: 99.0% (with errors allowed).
 
+According to Phred quality score value, about 1 in 5000 nucleotides is sequenced incorrectly. This way, Smith-Waterman is almost completely redundant: if we increase it's threshold even up to 180/200 (Phred predicts the most accurate values with threshold about 196/200, the mapping rate will be almost the same as if we remove it completely. 
+
 ## Usage
 
 Build:
