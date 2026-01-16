@@ -1,4 +1,4 @@
-# E. coli Read Mapper (C++)
+# Read Mapper
 
 ## Algorithms overview
 
@@ -6,22 +6,59 @@
    * The full reference string (ending with `$`).
    * The suffix array (`sa`) and the BWT string (`bwt`).
    * `C`: cumulative counts of characters for LF-mapping.
-   * `occ`: per-position checkpoints of character frequencies, so backward searches run in O(|pattern|).
+   * `occ`: per-position checkpoints of nucleotide frequencies, so backward searches run in O(|pattern|).
 
-2. **Seed-and-verify mapping.** Each read (forward and reverse complement) is split into A/C/G/T-only seeds by breaking on `N` (insensitive to leading/trailing or interior `N`s). Seeds shorter than `MIN_SEED` (default 20) are discarded; each valid seed carries its offset within the read so we can reconstruct candidate alignment positions. Exact seed hits are retrieved via the FM-index search, and `verify_read` demands the entire read matches the reference (treating `N` as a wildcard). The first seed hit that passes this check marks the read as mapped with identity score = read length; additional hits flag the read as multi-mapped but no other hits are emitted once one alignment is accepted.
+2. **Reads processing.** We conditionally divide the reads into three classes:
+    - reads without N (only ATGC) whose we try to map by standard technique (against FM-index). Noteworthy, not all the reads could be ideally mapped (sequencing errors).
+    - reads with N. We divide them into non-intersecting fragments by splitting by N characters. Each of those fragments with length not lesser than `MIN_SEED = 20` - to decrease the calculations) we try to map against FM-index. Each one of the successful mapping we try to extend (in both directions) looking for exact matchings.
+    - reads that weren't mapped on the previous steps. The main reason for that - sequencing errors. We use heuristic to map thos - as in the step two, we divide the read into fragments (`FALLBACK_FRAGMENT_LEN = 24`, if contains N, split by N) and try to map new fragments. For successful fragment mapping we extend the aligned sequence, looking not for exact matchings (it wouldn't result in anything new) but using DP Smith-Waterman algorithm for local alignments. To prevent too much computations, we restrict the number of initial seed hits and attempts of DP: `FRAGMENT_MAX_HITS = 64`, `SMITH_WATERMAN_MAX_ATTEMPTS = 400`.
 
-3. **Smith–Waterman fallback.** Reads that do not survive the identity check fall back to a local alignment stage:
-   * Reads containing `N` are split on that `N`, so each A/C/G/T block seeds a SW search.
-   * Reads without `N` are chunked into fixed-length fragments (`FALLBACK_FRAGMENT_LEN = 24`) that seed the fallback.
-   * For each fragment, the FM-index finds all occurrences, and we try at most `FRAGMENT_MAX_HITS = 64` per fragment and `SMITH_WATERMAN_MAX_ATTEMPTS = 400` attempts total to limit work.
-   * Each candidate reference region extends `SMITH_WATERMAN_WINDOW = 40` bases beyond the projected read start on both sides to give the SW DP room.
-   * The SW scoring scheme is `MATCH = +2`, `MISMATCH = -1`, `GAP = -2`, and alignments must score at least `SMITH_WATERMAN_MIN_SCORE = 50` to count. The DP routine reuses thread-local scratch buffers (`SWScratch`) so that we avoid repeated allocations during batches.
-   * Only the first successful SW alignment per read is kept; we do not record additional alignments afterwards.
+Obviously, we accounted the possibilty of mapping to complementary DNA chain (producing mirror reads and mapping them as well).
+To speed up the process of read mapping, we use parallelization and dynamic loading of reads in batches.
 
-4. **Reporting and coverage.** Mapped reads contribute to global statistics with atomic counters, track coverage by incrementing `coverage[pos]` for the span of each accepted alignment, and accumulate:
-   * `quality_sum` and `quality_count` across all mapped reads (identity and SW alike).
-   * `sw_score_sum` and `sw_score_count` only for SW alignments that produced a non-zero score.
-   * Counts of identity mappings, SW-from-reads-with-`N`, and SW-from-reads-without-`N`.
+3. **Data quality.** To compute the quality of .fastq reads we use only information from .fastq file (this way, the whole mapping process may be scipped). We don't account the quality of separate reads in mapping - this would require too complex algorithms. So the only purpose of this part of the project is to provide overall sequencing quality - computed as mean of each nucleotide quality score (decoded by Phred quality score - ASCII symbols from '!' to 'I'). As some parameter of the quality of the mapping itself, we use the mean score of Smith-Waterman algorithm (for not ideally matching sequences). Base on this we could compute the overall meaning score (using the fact that ideally matching 100 bp sequences would have SW score 200).
+
+## Program reports
+
+./build/bioinf (mapper)
+```
+[INFO] Mapping finished
+Total reads processed: 22720100
+Mapping rate: 99.87% (22690573/22720100)
+Unique mapping rate: 98.67% (22387677 reads)
+Multi-mapping rate: 1.33% (302896 reads)
+Alignment quality (mean score): 103.46
+Genome coverage: 99.04% (4597061/4641651 bases)
+Reads mapped by technique:
+  - BWT full identity: 19619550
+  - Smith-Waterman (reads with N): 4102
+  - Smith-Waterman (reads without N): 3066921
+Smith-Waterman mean score (non-zero alignments): 125.58
+```
+
+./build/fastq_quality (quality calculator)
+```
+[INFO] overall: 22720100 reads, 2272010000 bases, mean quality 36.16
+```
+
+./build/bioinf (mapper, old version, without Smith-Waterman - only exact matchings)
+```
+[INFO] Mapping finished
+Total reads: 22720100
+Mapped reads: 19619550
+Mapping rate: 86.3533%
+Unique mappings: 19256495
+Multi-mappings: 363055
+```
+
+## Results
+This way we can clearly present requested by the task values and properties:
+1. Algorithms used: BWT, SA, FM-index, custom-made splitting the read into substrings, Smith-Waterman local alignment.
+2. Total number of reads processed: 22720100 (100%)
+3. Mapping rates: 86.4% (exact matches only), 99.0% (with errors allowed). Noteworthy, the second value depends on the threshold of allowed Smith-Waterman score (in our case, 50/200).
+4. Percentage of unique/multi-mapped reads (out of mapped reads): 98.1%/1.9% (exact matches only), 98.7%/1.3% (with errors allowed).
+5. Allignment quality: 125.6 (out of 200, mean Smith-Waterman score for non-exactly matched reads); 36.16 (Phred quality score, describes sequencing).
+6. Genome read coverage: 99.0% (with errors allowed).
 
 ## Usage
 
@@ -29,80 +66,18 @@ Build:
 ```
 mkdir -p build
 cmake -S . -B build
+# building the mapper
 cmake --build build -j
+# building the quality calculator
+cmake --build build --target fastq_quality
 ```
 
 Run (example):
 ```
-./build/ecoli_mapper \
-  --ref data/GCF_000005845.2_ASM584v2_genomic.fna \
-  --reads data/ERR022075_1.fastq
+# running the mapper
+./build/bioinf
+# running the quality calculator
+./build/fastq_quality <fastq>
 ```
 
-The executable prints progress and finally emits the “short report” below, using the in-memory counters that were just described.
-
-## Short report (example metrics)
-
-```
-[INFO] Mapping finished
-Total reads processed: <total_reads>
-Mapping rate: <mapped>% (<mapped>/<total_reads>)
-Unique mapping rate: <unique_rate>% (<unique_reads> reads)
-Multi-mapping rate: <multi_rate>% (<multi_reads> reads)
-Alignment quality (mean score): 103.46
-Genome coverage: <coverage_rate>% (<covered_bases>/<genome_length> bases)
-Reads mapped by technique:
-  - BWT full identity: <identity_mapped>
-  - Smith-Waterman (reads with N): <sw_from_n>
-  - Smith-Waterman (reads without N): <sw_from_no_n>
-Smith-Waterman mean score (non-zero alignments): 125.58
-```
-
-The concrete percentages (`<mapped>`, `<unique_rate>`, etc.) come from the run against the provided FASTQ and reference. In our earlier profiling run we observed about 86% mapping and an alignment quality around 103.5, with SW alignments averaging 125.6.
-
-## Algorithm parameters recap
-
-* **FM-index seeds** are at least 20 bases long (this is `MIN_SEED` in `src/main.cpp`) and are drawn from uninterrupted ACGT segments between `N`s; seeds know their offset so verification can overlay the whole read on top of the reference.
-* **Identity verification** uses `verify_read(read_view, ref_start)` to compare every base of the read (treating `N` as wildcard) with the reference without touching the sentinel `$`.
-* **Smith–Waterman scoring:** match = +2, mismatch = –1, gap = –2, minimum score = 50; local alignment of a 100 bp read therefore tops out at 200 and falls below the threshold as soon as the number of mismatches/gaps undoes too much of the `+2` total.
-* **SW search bounds:** each candidate start scans ±40 bp around the predicted position; we halt further attempts if a region already produced an accepted alignment, ensuring only one alignment per read contributes to the report.
-
-## Result interpretation
-
-* Alignment quality formula:  
-  `alignment_quality = quality_sum / quality_count`, where `quality_sum` contains the read length for identity mappings and the SW score for fallback alignments.
-* Smith-Waterman mean score formula:  
-  `mean_sw_score = sw_score_sum / sw_score_count`, where both sums only collect values from non-zero SW alignments.
-* The multi-mapping flag is set when any seed or SW fragment finds multiple FM-index hits before verification, so the unique/multi percentages reflect how often a read could land in more than one spot at the FM-index search stage.
-
-This README now ties together the project structure, the algorithms, their thresholds, and the run-time report you asked for. Let me know if you need the file to list per-read outputs or per-base depth files again.
-
-Total reads: 22720100
-Mapped reads: 19623654
-Mapping rate: 86.3713%
-Unique mappings: 19296169
-Multi-mappings: 327485
-
-Total reads: 22720100
-Mapped reads: 19619550
-Mapping rate: 86.3533%
-Unique mappings: 19256495
-Multi-mappings: 363055
-
-## Standalone quality helpers
-
-### Fast C++ reader
-
-For large read sets (e.g., tens of millions of entries) prefer the compiled `fastq_quality` binary: it streams FASTQ/FASTQ.gz files, keeps a running tally, and emits `[INFO] … reads processed` logs every 1,000,000 reads by default so you can track progress. Build it with CMake and run it like this:
-
-```
-cmake -S . -B build
-cmake --build build --target fastq_quality
-./build/fastq_quality --progress-step 1000000 data/ERR022075_1.fastq.gz
-```
-
-The program prints per-file summaries followed by an overall mean quality score, and it only requires the input reads (no reference).
-
-### Python fallback
-
-`scripts/fastq_quality.py` remains as a quick ad-hoc tool when you need a portable script. It also summaries mean Phred+33 quality per file (and overall), but it is single-threaded and therefore slower on very large files.
+The executables print progress and the short report with results.
