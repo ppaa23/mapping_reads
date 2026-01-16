@@ -88,3 +88,21 @@ Mapped reads: 19619550
 Mapping rate: 86.3533%
 Unique mappings: 19256495
 Multi-mappings: 363055
+
+## Standalone quality helpers
+
+### Fast C++ reader
+
+For large read sets (e.g., tens of millions of entries) prefer the compiled `fastq_quality` binary: it streams FASTQ/FASTQ.gz files, keeps a running tally, and emits `[INFO] … reads processed` logs every 1,000,000 reads by default so you can track progress. Build it with CMake and run it like this:
+
+```
+cmake -S . -B build
+cmake --build build --target fastq_quality
+./build/fastq_quality --progress-step 1000000 data/ERR022075_1.fastq.gz
+```
+
+The program prints per-file summaries followed by an overall mean quality score, and it only requires the input reads (no reference).
+
+### Python fallback
+
+`scripts/fastq_quality.py` remains as a quick ad-hoc tool when you need a portable script. It also summaries mean Phred+33 quality per file (and overall), but it is single-threaded and therefore slower on very large files.

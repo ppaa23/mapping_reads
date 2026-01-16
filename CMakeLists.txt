@@ -6,8 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(bioinf src/main.cpp)
 target_include_directories(bioinf PRIVATE include)
+add_executable(fastq_quality src/fastq_quality.cpp)
 
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(bioinf OpenMP::OpenMP_CXX)
 endif()
+
+find_package(ZLIB REQUIRED)
+target_link_libraries(fastq_quality PRIVATE ZLIB::ZLIB)
